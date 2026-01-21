@@ -1,0 +1,4 @@
+openai>=1.0.0
+notion-client>=2.2.0
+Mastodon.py>=1.8.0
+python-dotenv>=1.0.0
