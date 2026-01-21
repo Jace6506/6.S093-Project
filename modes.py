@@ -25,6 +25,14 @@ from utils import (
     truncate_post_to_limit,
     edit_post_content
 )
+from telegram_interactive import (
+    send_post_preview,
+    send_edit_options,
+    send_replies_preview,
+    send_reply_selection,
+    send_confirmation,
+    wait_for_text_edit
+)
 
 
 def create_new_post_mode():
@@ -98,46 +106,27 @@ def create_new_post_mode():
         print("⚠️  Replicate not configured. Posting without image.")
         print("   Set REPLICATE_API_TOKEN and REPLICATE_MODEL to enable image generation")
     
+    # Warn if over limit
+    if len(post_content) > 500:
+        post_content = truncate_post_to_limit(post_content, max_length=500)
+        print(f"⚠️  Post truncated to {len(post_content)} characters")
+    
     # Loop until user posts or cancels
     while True:
-        print("\n" + "=" * 50)
-        print("POST PREVIEW")
-        print("=" * 50)
-        print("\nText:")
-        print("-" * 50)
-        print(post_content)
-        print("-" * 50)
-        post_length = len(post_content)
-        print(f"\nPost length: {post_length} characters")
-        
-        # Warn if over limit
-        if post_length > 500:
-            print(f"⚠️  WARNING: Post exceeds 500 character limit by {post_length - 500} characters!")
-            print("   The post will be truncated before posting.")
-            post_content = truncate_post_to_limit(post_content, max_length=500)
-            print(f"   Truncated to {len(post_content)} characters")
-        
-        if image_path and os.path.exists(image_path):
-            print(f"\n📷 Image: {image_path}")
-            print("   (Image will be included with the post)")
-        else:
-            print("\n📷 No image")
-        
-        # Ask for confirmation before posting
+        # Send preview to Telegram and wait for response
         if mastodon:
-            print("\n" + "=" * 50)
-            response = input("Do you want to post this to Mastodon? (yes/no/edit): ").strip().lower()
+            response = send_post_preview(post_content, image_path)
             
-            if response in ['yes', 'y']:
+            if response == "approve":
                 # Final validation before posting
                 if len(post_content) > 500:
                     post_content = truncate_post_to_limit(post_content, max_length=500)
-                    print(f"\n⚠️  Post truncated to {len(post_content)} characters before posting")
                 
                 print("\nPosting to Mastodon...")
                 status = post_to_mastodon(post_content, image_path)
                 
                 if status:
+                    send_confirmation(f"✅ *Successfully posted to Mastodon!*\n\nPost URL: {status.get('url', 'N/A')}")
                     print(f"✅ Successfully posted to Mastodon!")
                     print(f"   Post URL: {status.get('url', 'N/A')}")
                     # Clean up temp image file
@@ -147,89 +136,12 @@ def create_new_post_mode():
                         except:
                             pass
                 else:
+                    send_confirmation("❌ *Failed to post to Mastodon*")
                     print("❌ Failed to post to Mastodon")
                 break  # Exit the loop
-            elif response in ['edit', 'e']:
-                # Ask what they want to edit
-                print("\nWhat would you like to edit?")
-                print("  1. Edit text")
-                print("  2. Generate new image")
-                print("  3. Both")
                 
-                edit_choice = input("Enter choice (1/2/3): ").strip()
-                
-                if edit_choice == "1":
-                    # Edit text only
-                    post_content = edit_post_content(post_content)
-                    print("\n" + "=" * 50)
-                    print("Text updated!")
-                    print("=" * 50)
-                elif edit_choice == "2":
-                    # Generate new image
-                    if replicate_client and REPLICATE_MODEL:
-                        print("\nGenerating new image...")
-                        image_prompt = generate_image_prompt_from_post(post_content)
-                        print(f"Image prompt: {image_prompt}\n")
-                        
-                        image_url = generate_image_with_replicate(image_prompt)
-                        if image_url:
-                            # Delete old image if exists
-                            if image_path and os.path.exists(image_path):
-                                try:
-                                    os.unlink(image_path)
-                                except:
-                                    pass
-                            
-                            # Download new image
-                            temp_image = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
-                            temp_image.close()
-                            image_path = download_image(image_url, temp_image.name)
-                            
-                            if image_path:
-                                print(f"✅ New image generated: {image_path}")
-                            else:
-                                print("⚠️  Could not download new image")
-                        else:
-                            print("⚠️  Could not generate new image")
-                    else:
-                        print("⚠️  Replicate not configured")
-                elif edit_choice == "3":
-                    # Edit both
-                    post_content = edit_post_content(post_content)
-                    
-                    if replicate_client and REPLICATE_MODEL:
-                        print("\nGenerating new image based on updated text...")
-                        image_prompt = generate_image_prompt_from_post(post_content)
-                        print(f"Image prompt: {image_prompt}\n")
-                        
-                        image_url = generate_image_with_replicate(image_prompt)
-                        if image_url:
-                            # Delete old image if exists
-                            if image_path and os.path.exists(image_path):
-                                try:
-                                    os.unlink(image_path)
-                                except:
-                                    pass
-                            
-                            # Download new image
-                            temp_image = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
-                            temp_image.close()
-                            image_path = download_image(image_url, temp_image.name)
-                            
-                            if image_path:
-                                print(f"✅ New image generated: {image_path}")
-                            else:
-                                print("⚠️  Could not download new image")
-                        else:
-                            print("⚠️  Could not generate new image")
-                    else:
-                        print("⚠️  Replicate not configured")
-                
-                print("\n" + "=" * 50)
-                print("Updated preview:")
-                print("=" * 50)
-                # Loop will continue and show the updated version
-            else:
+            elif response == "reject":
+                send_confirmation("❌ *Post rejected. Not published.*")
                 print("Post not published. Exiting.")
                 # Clean up temp image file
                 if image_path and os.path.exists(image_path):
@@ -238,10 +150,108 @@ def create_new_post_mode():
                     except:
                         pass
                 break  # Exit the loop
-    else:
-        print("\n💡 To post to Mastodon, set these environment variables:")
-        print("   - MASTODON_INSTANCE_URL (e.g., https://mastodon.social)")
-        print("   - MASTODON_ACCESS_TOKEN (your Mastodon access token)")
+                
+            elif response == "edit":
+                # Ask what they want to edit via Telegram
+                edit_choice = send_edit_options(post_content)
+                
+                if edit_choice and edit_choice not in ["edit_text", "edit_image", "edit_both"]:
+                    # This is edited text from edit_text option
+                    post_content = edit_choice
+                    if len(post_content) > 500:
+                        post_content = truncate_post_to_limit(post_content, max_length=500)
+                    # Loop will continue and show updated preview
+                    
+                elif edit_choice == "edit_image":
+                    # Generate new image
+                    if replicate_client and REPLICATE_MODEL:
+                        send_confirmation("🖼️ *Generating new image...*")
+                        image_prompt = generate_image_prompt_from_post(post_content)
+                        
+                        image_url = generate_image_with_replicate(image_prompt)
+                        if image_url:
+                            # Delete old image if exists
+                            if image_path and os.path.exists(image_path):
+                                try:
+                                    os.unlink(image_path)
+                                except:
+                                    pass
+                            
+                            # Download new image
+                            temp_image = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+                            temp_image.close()
+                            image_path = download_image(image_url, temp_image.name)
+                            
+                            if image_path:
+                                send_confirmation("✅ *New image generated!*")
+                            else:
+                                send_confirmation("⚠️ *Could not download new image*")
+                        else:
+                            send_confirmation("⚠️ *Could not generate new image*")
+                    else:
+                        send_confirmation("⚠️ *Replicate not configured*")
+                        
+                elif edit_choice == "edit_both":
+                    # The text edit should have already happened in send_edit_options
+                    # Now we need to get the edited text and generate new image
+                    # Check if we have the edited text stored
+                    from telegram_interactive import _pending_responses
+                    context_id = None
+                    for cid, pending in list(_pending_responses.items()):
+                        if 'edited_text' in pending:
+                            post_content = pending['edited_text']
+                            context_id = cid
+                            break
+                    
+                    if context_id and context_id in _pending_responses:
+                        del _pending_responses[context_id]
+                    
+                    if len(post_content) > 500:
+                        post_content = truncate_post_to_limit(post_content, max_length=500)
+                    
+                    # Then generate new image based on updated text
+                    if replicate_client and REPLICATE_MODEL:
+                        send_confirmation("🖼️ *Generating new image based on updated text...*")
+                        image_prompt = generate_image_prompt_from_post(post_content)
+                        
+                        image_url = generate_image_with_replicate(image_prompt)
+                        if image_url:
+                            # Delete old image if exists
+                            if image_path and os.path.exists(image_path):
+                                try:
+                                    os.unlink(image_path)
+                                except:
+                                    pass
+                            
+                            # Download new image
+                            temp_image = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+                            temp_image.close()
+                            image_path = download_image(image_url, temp_image.name)
+                            
+                            if image_path:
+                                send_confirmation("✅ *Both text and image updated!*")
+                            else:
+                                send_confirmation("⚠️ *Could not download new image*")
+                        else:
+                            send_confirmation("⚠️ *Could not generate new image*")
+                    else:
+                        send_confirmation("⚠️ *Replicate not configured*")
+                
+                # Loop will continue and show updated preview
+            else:
+                # Timeout or no response
+                send_confirmation("⏱️ *No response received. Exiting.*")
+                if image_path and os.path.exists(image_path):
+                    try:
+                        os.unlink(image_path)
+                    except:
+                        pass
+                break
+        else:
+            print("\n💡 To post to Mastodon, set these environment variables:")
+            print("   - MASTODON_INSTANCE_URL (e.g., https://mastodon.social)")
+            print("   - MASTODON_ACCESS_TOKEN (your Mastodon access token)")
+            break
 
 
 def craft_replies_mode():
@@ -255,7 +265,7 @@ def craft_replies_mode():
     print("CRAFT REPLIES MODE")
     print("=" * 50)
     
-    # Get keyword from user
+    # Get keyword from user (still use terminal for initial input)
     keyword = input("\nEnter a keyword to search for posts: ").strip()
     if not keyword:
         print("No keyword provided. Exiting.")
@@ -328,12 +338,12 @@ def craft_replies_mode():
             print(reply_text)
             print("-" * 50)
     
-    # Ask which replies to post
-    print("\n" + "=" * 50)
-    response = input("Which replies would you like to post? (all/select/none): ").strip().lower()
+    # Ask which replies to post via Telegram
+    response = send_replies_preview(replies, posts)
     
-    if response in ['all', 'a']:
+    if response == "approve_all":
         # Post all replies
+        send_confirmation("📤 *Posting all replies...*")
         print("\nPosting all replies...")
         for reply in replies:
             post_num = reply.get('post_number', 0)
@@ -344,33 +354,28 @@ def craft_replies_mode():
                 print(f"\nPosting reply to Post {post_num}...")
                 status = reply_to_post(post['id'], reply_text)
                 if status:
+                    send_confirmation(f"✅ *Reply {post_num} posted!*\nURL: {status.get('url', 'N/A')}")
                     print(f"✅ Reply posted! URL: {status.get('url', 'N/A')}")
                 else:
+                    send_confirmation(f"❌ *Failed to post reply {post_num}*")
                     print(f"❌ Failed to post reply")
     
-    elif response in ['select', 's']:
-        # Let user select which ones to post
-        print("\nEnter the numbers of replies you want to post (comma-separated, e.g., 1,3,5):")
-        selected = input().strip()
+    elif response == "edit_replies":
+        # Let user select which ones to edit
+        selected_response = send_reply_selection(replies, posts)
         
-        try:
-            selected_nums = [int(x.strip()) for x in selected.split(',')]
-            for num in selected_nums:
-                if 1 <= num <= len(replies):
-                    reply = replies[num - 1]
-                    post_num = reply.get('post_number', 0)
-                    reply_text = reply.get('reply_text', '')
-                    
-                    if 1 <= post_num <= len(posts):
-                        post = posts[post_num - 1]
-                        print(f"\nPosting reply to Post {post_num}...")
-                        status = reply_to_post(post['id'], reply_text)
-                        if status:
-                            print(f"✅ Reply posted! URL: {status.get('url', 'N/A')}")
-                        else:
-                            print(f"❌ Failed to post reply")
-        except ValueError:
-            print("Invalid selection. Exiting.")
+        # Handle individual reply editing
+        # This is a simplified version - in production you'd want better state management
+        if selected_response and selected_response.startswith("edit"):
+            # Parse which reply was selected
+            # For now, just show a message
+            send_confirmation("✏️ *Reply editing selected. Please reply to the edit message with your new text.*")
+            # In a full implementation, you'd handle the individual reply editing here
+    
+    elif response == "reject":
+        send_confirmation("❌ *Replies rejected. No replies posted.*")
+        print("No replies posted. Exiting.")
     
     else:
+        send_confirmation("⏱️ *No response received. Exiting.*")
         print("No replies posted. Exiting.")

@@ -1,21 +1,22 @@
 """Main entry point for Mastodon Post Generator."""
 from modes import create_new_post_mode, craft_replies_mode
+from telegram_interactive import send_mode_selection, send_confirmation
+import asyncio
 
 
 if __name__ == "__main__":
-    # Ask user which mode they want
     print("=" * 50)
     print("MASTODON POST GENERATOR")
     print("=" * 50)
-    print("\nWhat would you like to do?")
-    print("  1. Create a new post from Notion content")
-    print("  2. Craft replies to existing posts")
+    print("\nStarting Telegram bot...")
     
-    mode = input("\nEnter choice (1 or 2): ").strip()
+    # Ask user which mode they want via Telegram
+    mode = send_mode_selection()
     
-    if mode == "1":
+    if mode == "new_post":
         create_new_post_mode()
-    elif mode == "2":
+    elif mode == "craft_replies":
         craft_replies_mode()
     else:
-        print("Invalid choice. Exiting.")
+        send_confirmation("❌ *Invalid choice or no response. Exiting.*")
+        print("Invalid choice or no response. Exiting.")

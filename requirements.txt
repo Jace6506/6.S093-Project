@@ -3,3 +3,5 @@ notion-client>=2.2.0
 Mastodon.py>=1.8.0
 replicate>=0.25.0
 requests>=2.31.0
+python-telegram-bot>=20.0
+python-dotenv>=1.0.0
