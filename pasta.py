@@ -6,6 +6,9 @@ import re
 import tempfile
 import subprocess
 import json
+import replicate
+import requests
+from urllib.parse import urlparse
 
 # Load environment variables from .env file if it exists
 try:
@@ -49,6 +52,16 @@ if MASTODON_INSTANCE_URL and MASTODON_ACCESS_TOKEN:
         mastodon = None
 else:
     mastodon = None
+
+# Initialize Replicate client
+REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN", "").strip()
+REPLICATE_MODEL = os.environ.get("REPLICATE_MODEL", "").strip()  # e.g., "username/model-name:version"
+
+if REPLICATE_API_TOKEN:
+    os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
+    replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN)
+else:
+    replicate_client = None
 
 
 def extract_text_from_block(block):
@@ -144,24 +157,44 @@ def fetch_notion_database_pages(database_id, max_pages=10):
     return "\n\n---\n\n".join(all_content)
 
 
+def truncate_post_to_limit(post_content, max_length=500):
+    """Truncate post content to fit within character limit, preserving words."""
+    if len(post_content) <= max_length:
+        return post_content
+    
+    # Truncate to max_length, but try to end at a word boundary
+    truncated = post_content[:max_length]
+    # Find the last space before the limit
+    last_space = truncated.rfind(' ')
+    if last_space > max_length * 0.9:  # Only use word boundary if it's not too short
+        truncated = truncated[:last_space]
+    
+    # Add ellipsis if truncated
+    if len(truncated) < len(post_content):
+        truncated = truncated.rstrip() + "..."
+    
+    return truncated
+
+
 def generate_mastodon_post(notion_content):
     """Generate a Mastodon post based on Notion content."""
     
     system_prompt = """You are a social media content creator. Based on the provided documents, create an engaging Mastodon post.
     
 Guidelines:
-- Create a single, engaging Mastodon post (typically 500 characters or less, but can be longer)
+- Create a single, engaging Mastodon post (MUST be 500 characters or less - this is a hard limit)
 - Make it shareable and engaging
 - Use hashtags strategically (2-5 relevant hashtags)
 - Maintain the key messages from the source material
 - Write in a conversational, authentic tone
-- Do NOT include any numbering or formatting like "1.", "2.", etc. - just write the post directly"""
+- Do NOT include any numbering or formatting like "1.", "2.", etc. - just write the post directly
+- IMPORTANT: Keep your response under 500 characters total"""
 
-    user_message = f"""Based on the following documents from Notion, create a Mastodon post:
+    user_message = f"""Based on the following documents from Notion, create a Mastodon post (max 500 characters):
 
 {notion_content}
 
-Generate the post now (just the post text, no numbering or extra formatting):"""
+Generate the post now (just the post text, no numbering or extra formatting, under 500 characters):"""
 
     response = llm_client.chat.completions.create(
         model="nvidia/nemotron-3-nano-30b-a3b:free",
@@ -178,8 +211,14 @@ Generate the post now (just the post text, no numbering or extra formatting):"""
     post_content = re.sub(r'^\d+[\.\)]\s*', '', post_content, flags=re.MULTILINE)
     # Remove "Post:" or similar prefixes
     post_content = re.sub(r'^(Post|Mastodon Post|Here\'s the post):\s*', '', post_content, flags=re.IGNORECASE)
+    post_content = post_content.strip()
     
-    return post_content.strip()
+    # Enforce 500 character limit
+    if len(post_content) > 500:
+        post_content = truncate_post_to_limit(post_content, max_length=500)
+        print(f"⚠️  Post exceeded 500 characters and was truncated to {len(post_content)} characters")
+    
+    return post_content
 
 
 def edit_post_content(post_content):
@@ -220,7 +259,7 @@ def edit_post_content(post_content):
         print(f"Error opening editor: {e}")
         print("Falling back to simple text input...")
         # Fallback: just ask for new content
-        print("\nEnter your edited post (press Enter twice when done):")
+        print("\nEnter your edited post (press Enter twice when done, max 500 characters):")
         lines = []
         while True:
             line = input()
@@ -228,11 +267,19 @@ def edit_post_content(post_content):
                 break
             lines.append(line)
         edited_content = "\n".join(lines[:-1])  # Remove the last empty line
+        edited_content = edited_content.strip()
         os.unlink(tmp_file_path)
-        return edited_content.strip()
+        
+        # Validate and truncate if necessary
+        if len(edited_content) > 500:
+            print(f"\n⚠️  Warning: Edited post is {len(edited_content)} characters (exceeds 500 limit)")
+            edited_content = truncate_post_to_limit(edited_content, max_length=500)
+            print(f"   Truncated to {len(edited_content)} characters")
+        
+        return edited_content
     except FileNotFoundError:
         print(f"Editor '{editor}' not found. Using simple text input...")
-        print("\nEnter your edited post (press Enter twice when done):")
+        print("\nEnter your edited post (press Enter twice when done, max 500 characters):")
         lines = []
         while True:
             line = input()
@@ -240,14 +287,29 @@ def edit_post_content(post_content):
                 break
             lines.append(line)
         edited_content = "\n".join(lines[:-1])
+        edited_content = edited_content.strip()
         os.unlink(tmp_file_path)
-        return edited_content.strip()
+        
+        # Validate and truncate if necessary
+        if len(edited_content) > 500:
+            print(f"\n⚠️  Warning: Edited post is {len(edited_content)} characters (exceeds 500 limit)")
+            edited_content = truncate_post_to_limit(edited_content, max_length=500)
+            print(f"   Truncated to {len(edited_content)} characters")
+        
+        return edited_content
     
     # Read the edited content
     try:
         with open(tmp_file_path, 'r') as f:
             edited_content = f.read().strip()
         os.unlink(tmp_file_path)  # Clean up temp file
+        
+        # Validate and truncate if necessary
+        if len(edited_content) > 500:
+            print(f"\n⚠️  Warning: Edited post is {len(edited_content)} characters (exceeds 500 limit)")
+            edited_content = truncate_post_to_limit(edited_content, max_length=500)
+            print(f"   Truncated to {len(edited_content)} characters")
+        
         return edited_content
     except Exception as e:
         print(f"Error reading edited file: {e}")
@@ -394,20 +456,164 @@ def reply_to_post(post_id, reply_text):
         return None
 
 
-def post_to_mastodon(post_content):
-    """Post content to Mastodon."""
+def generate_image_prompt_from_post(post_text):
+    """Generate an image generation prompt based on the post text."""
+    system_prompt = """You are a prompt engineer for image generation. Based on a social media post, create a concise, descriptive prompt for generating a relevant image.
+    
+Guidelines:
+- Keep the prompt under 100 words
+- Focus on visual elements, mood, and setting
+- Make it suitable for image generation
+- Include the trigger word "jace" in the prompt
+- Be specific about composition, lighting, and style
+- Return ONLY the prompt, no explanation or extra text"""
+
+    user_message = f"""Create an image generation prompt for this post:
+
+{post_text}
+
+Image prompt:"""
+
+    try:
+        response = llm_client.chat.completions.create(
+            model="nvidia/nemotron-3-nano-30b-a3b:free",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+        )
+        
+        prompt = response.choices[0].message.content.strip()
+        # Ensure "jace" is in the prompt (the trigger word)
+        if "jace" not in prompt.lower():
+            prompt = f"jace, {prompt}"
+        
+        return prompt
+    except Exception as e:
+        print(f"⚠️  Error generating image prompt: {e}")
+        # Fallback: use post text with trigger word
+        return f"jace, {post_text[:200]}"
+
+
+def generate_image_with_replicate(prompt):
+    """Generate an image using Replicate."""
+    if not replicate_client:
+        print("⚠️  Replicate API not configured.")
+        return None
+    
+    if not REPLICATE_MODEL:
+        print("⚠️  REPLICATE_MODEL not set. Please set it in your .env file")
+        print("   Example: REPLICATE_MODEL=username/model-name")
+        print("   Or: REPLICATE_MODEL=username/model-name:version-id")
+        return None
+    
+    try:
+        print(f"   Generating image with prompt: {prompt[:100]}...")
+        print("   This may take a minute...")
+        print(f"   Using model: {REPLICATE_MODEL}")
+        
+        # Try different model formats
+        model_to_use = REPLICATE_MODEL
+        
+        # If model has a colon, try it as-is first
+        if ':' in REPLICATE_MODEL:
+            try:
+                output = replicate_client.run(
+                    model_to_use,
+                    input={"prompt": prompt}
+                )
+            except Exception as e:
+                # If version fails, try without version (use latest)
+                if "version" in str(e).lower() or "422" in str(e):
+                    print(f"   ⚠️  Version issue, trying model without version...")
+                    model_to_use = REPLICATE_MODEL.split(':')[0]
+                    output = replicate_client.run(
+                        model_to_use,
+                        input={"prompt": prompt}
+                    )
+                else:
+                    raise
+        
+        # If no colon, use as-is
+        else:
+            output = replicate_client.run(
+                model_to_use,
+                input={"prompt": prompt}
+            )
+        
+        # Replicate returns a URL or list of URLs
+        if isinstance(output, list):
+            image_url = output[0] if output else None
+        else:
+            image_url = output
+        
+        if image_url:
+            print(f"   ✅ Image generated successfully!")
+            return image_url
+        else:
+            print("   ⚠️  No image URL returned")
+            return None
+            
+    except Exception as e:
+        error_msg = str(e)
+        print(f"❌ Error generating image: {error_msg}")
+        
+        # Provide helpful troubleshooting
+        if "422" in error_msg or "version" in error_msg.lower() or "permission" in error_msg.lower():
+            print("\n💡 Troubleshooting tips:")
+            print("   1. Check your REPLICATE_MODEL format:")
+            print("      - Try: username/model-name (without version)")
+            print("      - Or: username/model-name:version-id")
+            print(f"   2. Current model: {REPLICATE_MODEL}")
+            print("   3. Make sure the model exists and you have access to it")
+            print("   4. Check your Replicate dashboard: https://replicate.com/models")
+            print("   5. For finetuned models, use: your-username/model-name")
+        
+        return None
+
+
+def download_image(image_url, save_path):
+    """Download an image from a URL to a local file."""
+    try:
+        response = requests.get(image_url, stream=True)
+        response.raise_for_status()
+        
+        with open(save_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        return save_path
+    except Exception as e:
+        print(f"❌ Error downloading image: {e}")
+        return None
+
+
+def post_to_mastodon(post_content, image_path=None):
+    """Post content to Mastodon, optionally with an image."""
     if not mastodon:
         print("⚠️  Mastodon credentials not configured. Skipping post.")
         print("   Set MASTODON_INSTANCE_URL and MASTODON_ACCESS_TOKEN to enable posting.")
         return None
+    
+    # Final safety check - ensure post doesn't exceed 500 characters
+    if len(post_content) > 500:
+        print(f"⚠️  Post is {len(post_content)} characters, truncating to 500...")
+        post_content = truncate_post_to_limit(post_content, max_length=500)
     
     try:
         # Verify credentials first
         account = mastodon.account_verify_credentials()
         print(f"   Authenticated as: @{account['username']}")
         
-        # Post to Mastodon
-        status = mastodon.status_post(post_content)
+        # Post to Mastodon with or without media
+        if image_path and os.path.exists(image_path):
+            # Upload media first
+            media = mastodon.media_post(image_path)
+            # Post with media
+            status = mastodon.status_post(post_content, media_ids=[media['id']])
+        else:
+            # Post without media
+            status = mastodon.status_post(post_content)
         return status
     except Exception as e:
         error_msg = str(e)
@@ -465,45 +671,182 @@ def create_new_post_mode():
     print(f"\nFetched {len(content)} characters from Notion\n")
     print("=" * 50)
     
-    # Generate Mastodon post
+    # Generate Mastodon post text
     print(f"\n{'='*50}")
     print("Generating Mastodon post...")
     print(f"{'='*50}\n")
     
     post_content = generate_mastodon_post(content)
     
+    # Generate image for the post
+    image_path = None
+    if replicate_client and REPLICATE_MODEL:
+        print(f"\n{'='*50}")
+        print("Generating image for post...")
+        print(f"{'='*50}\n")
+        
+        # Generate image prompt from post text
+        image_prompt = generate_image_prompt_from_post(post_content)
+        print(f"Image prompt: {image_prompt}\n")
+        
+        # Generate image
+        image_url = generate_image_with_replicate(image_prompt)
+        
+        if image_url:
+            # Download image to temp file
+            temp_image = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+            temp_image.close()
+            image_path = download_image(image_url, temp_image.name)
+            
+            if image_path:
+                print(f"✅ Image generated and saved: {image_path}")
+            else:
+                print("⚠️  Could not download image")
+        else:
+            print("⚠️  Could not generate image")
+    else:
+        print("⚠️  Replicate not configured. Posting without image.")
+        print("   Set REPLICATE_API_TOKEN and REPLICATE_MODEL to enable image generation")
+    
     # Loop until user posts or cancels
     while True:
-        print("Generated post:")
+        print("\n" + "=" * 50)
+        print("POST PREVIEW")
+        print("=" * 50)
+        print("\nText:")
         print("-" * 50)
         print(post_content)
         print("-" * 50)
-        print(f"\nPost length: {len(post_content)} characters\n")
+        post_length = len(post_content)
+        print(f"\nPost length: {post_length} characters")
+        
+        # Warn if over limit
+        if post_length > 500:
+            print(f"⚠️  WARNING: Post exceeds 500 character limit by {post_length - 500} characters!")
+            print("   The post will be truncated before posting.")
+            post_content = truncate_post_to_limit(post_content, max_length=500)
+            print(f"   Truncated to {len(post_content)} characters")
+        
+        if image_path and os.path.exists(image_path):
+            print(f"\n📷 Image: {image_path}")
+            print("   (Image will be included with the post)")
+        else:
+            print("\n📷 No image")
         
         # Ask for confirmation before posting
         if mastodon:
-            print("=" * 50)
+            print("\n" + "=" * 50)
             response = input("Do you want to post this to Mastodon? (yes/no/edit): ").strip().lower()
             
             if response in ['yes', 'y']:
+                # Final validation before posting
+                if len(post_content) > 500:
+                    post_content = truncate_post_to_limit(post_content, max_length=500)
+                    print(f"\n⚠️  Post truncated to {len(post_content)} characters before posting")
+                
                 print("\nPosting to Mastodon...")
-                status = post_to_mastodon(post_content)
+                status = post_to_mastodon(post_content, image_path)
                 
                 if status:
                     print(f"✅ Successfully posted to Mastodon!")
                     print(f"   Post URL: {status.get('url', 'N/A')}")
+                    # Clean up temp image file
+                    if image_path and os.path.exists(image_path):
+                        try:
+                            os.unlink(image_path)
+                        except:
+                            pass
                 else:
                     print("❌ Failed to post to Mastodon")
                 break  # Exit the loop
             elif response in ['edit', 'e']:
-                # Allow user to edit the post
-                post_content = edit_post_content(post_content)
+                # Ask what they want to edit
+                print("\nWhat would you like to edit?")
+                print("  1. Edit text")
+                print("  2. Generate new image")
+                print("  3. Both")
+                
+                edit_choice = input("Enter choice (1/2/3): ").strip()
+                
+                if edit_choice == "1":
+                    # Edit text only
+                    post_content = edit_post_content(post_content)
+                    print("\n" + "=" * 50)
+                    print("Text updated!")
+                    print("=" * 50)
+                elif edit_choice == "2":
+                    # Generate new image
+                    if replicate_client and REPLICATE_MODEL:
+                        print("\nGenerating new image...")
+                        image_prompt = generate_image_prompt_from_post(post_content)
+                        print(f"Image prompt: {image_prompt}\n")
+                        
+                        image_url = generate_image_with_replicate(image_prompt)
+                        if image_url:
+                            # Delete old image if exists
+                            if image_path and os.path.exists(image_path):
+                                try:
+                                    os.unlink(image_path)
+                                except:
+                                    pass
+                            
+                            # Download new image
+                            temp_image = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+                            temp_image.close()
+                            image_path = download_image(image_url, temp_image.name)
+                            
+                            if image_path:
+                                print(f"✅ New image generated: {image_path}")
+                            else:
+                                print("⚠️  Could not download new image")
+                        else:
+                            print("⚠️  Could not generate new image")
+                    else:
+                        print("⚠️  Replicate not configured")
+                elif edit_choice == "3":
+                    # Edit both
+                    post_content = edit_post_content(post_content)
+                    
+                    if replicate_client and REPLICATE_MODEL:
+                        print("\nGenerating new image based on updated text...")
+                        image_prompt = generate_image_prompt_from_post(post_content)
+                        print(f"Image prompt: {image_prompt}\n")
+                        
+                        image_url = generate_image_with_replicate(image_prompt)
+                        if image_url:
+                            # Delete old image if exists
+                            if image_path and os.path.exists(image_path):
+                                try:
+                                    os.unlink(image_path)
+                                except:
+                                    pass
+                            
+                            # Download new image
+                            temp_image = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+                            temp_image.close()
+                            image_path = download_image(image_url, temp_image.name)
+                            
+                            if image_path:
+                                print(f"✅ New image generated: {image_path}")
+                            else:
+                                print("⚠️  Could not download new image")
+                        else:
+                            print("⚠️  Could not generate new image")
+                    else:
+                        print("⚠️  Replicate not configured")
+                
                 print("\n" + "=" * 50)
-                print("Post updated! Here's your edited version:")
+                print("Updated preview:")
                 print("=" * 50)
-                # Loop will continue and show the edited version
+                # Loop will continue and show the updated version
             else:
                 print("Post not published. Exiting.")
+                # Clean up temp image file
+                if image_path and os.path.exists(image_path):
+                    try:
+                        os.unlink(image_path)
+                    except:
+                        pass
                 break  # Exit the loop
     else:
         print("\n💡 To post to Mastodon, set these environment variables:")
