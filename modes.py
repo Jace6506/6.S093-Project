@@ -9,6 +9,7 @@ from notion import (
 )
 from llm import (
     generate_mastodon_post,
+    generate_post_with_rag,
     generate_replies_to_posts,
     generate_image_prompt_from_post
 )
@@ -33,28 +34,84 @@ from telegram_interactive import (
     send_confirmation,
     wait_for_text_edit
 )
+from rag_retrieval import retrieve_context, embed_notion_content
+from rag_database import check_content_embedded
 
 
-def create_new_post_mode():
-    """Handle the 'create new post' workflow."""
+def create_new_post_mode(use_rag: bool = True, topic: str = None):
+    """
+    Handle the 'create new post' workflow with optional RAG.
+    
+    Args:
+        use_rag: If True, use RAG retrieval instead of full content
+        topic: Optional topic/query for RAG retrieval
+    """
     # Configuration
-    # Option 1: Fetch from a database (multiple pages)
     NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
-    MAX_PAGES = 5  # Adjust as needed
+    NOTION_PAGE_ID = os.environ.get("NOTION_PAGE_ID", "")
     
-    # Option 2: Fetch from multiple page IDs (comma-separated)
-    # Option 3: Fetch from a single page ID
+    rag_context = None
+    query = None
     
-    if NOTION_DATABASE_ID:
-        print("Fetching content from Notion database...")
-        content = fetch_notion_database_pages(NOTION_DATABASE_ID, max_pages=MAX_PAGES)
-    else:
-        # Check for multiple page IDs (comma-separated) or single page ID
-        NOTION_PAGE_ID = os.environ.get("NOTION_PAGE_ID", "")
-        if NOTION_PAGE_ID:
-            # Check if multiple page IDs (comma-separated)
+    # Ensure content is embedded if using RAG
+    if use_rag:
+        print("=" * 50)
+        print("RAG Mode: Checking embeddings...")
+        print("=" * 50)
+        
+        # Check if content needs to be embedded
+        needs_embedding = False
+        if NOTION_DATABASE_ID:
+            if not check_content_embedded("notion_database", NOTION_DATABASE_ID):
+                needs_embedding = True
+        elif NOTION_PAGE_ID:
             page_ids = [pid.strip() for pid in NOTION_PAGE_ID.split(",") if pid.strip()]
-            
+            for page_id in page_ids:
+                if not check_content_embedded("notion_page", page_id):
+                    needs_embedding = True
+                    break
+        
+        if needs_embedding:
+            print("Content not yet embedded. Embedding now...")
+            chunks_embedded = embed_notion_content(force_reembed=False)
+            print(f"Embedded {chunks_embedded} chunks")
+        else:
+            print("Content already embedded. Using existing embeddings.")
+        
+        # Retrieve relevant context using RAG
+        print(f"\n{'='*50}")
+        print("Retrieving relevant context with RAG...")
+        print("=" * 50)
+        
+        # Use topic if provided, otherwise use a default query
+        query = topic if topic else "AI consulting services"
+        print(f"Search query: {query}")
+        
+        rag_context, results = retrieve_context(query, top_k=10)
+        print(f"Retrieved {len(results)} relevant chunks")
+        
+        if not rag_context or rag_context == "No relevant context found.":
+            print("⚠️  No relevant context found. Falling back to full content mode.")
+            use_rag = False
+            rag_context = None
+        else:
+            print(f"Context length: {len(rag_context)} characters")
+    
+    # Generate Mastodon post text
+    print(f"\n{'='*50}")
+    print("Generating Mastodon post...")
+    print(f"{'='*50}\n")
+    
+    if use_rag and rag_context:
+        # Use RAG context
+        post_content = generate_post_with_rag(rag_context, topic=query)
+    else:
+        # Fallback to full content mode
+        if NOTION_DATABASE_ID:
+            print("Fetching content from Notion database...")
+            content = fetch_notion_database_pages(NOTION_DATABASE_ID, max_pages=5)
+        elif NOTION_PAGE_ID:
+            page_ids = [pid.strip() for pid in NOTION_PAGE_ID.split(",") if pid.strip()]
             if len(page_ids) > 1:
                 print(f"Fetching content from {len(page_ids)} Notion pages...")
                 content = fetch_multiple_notion_pages(page_ids)
@@ -63,18 +120,10 @@ def create_new_post_mode():
                 content = fetch_notion_page_content(page_ids[0])
         else:
             print("Error: Please set either NOTION_DATABASE_ID or NOTION_PAGE_ID environment variable")
-            print("For multiple pages, use comma-separated IDs: NOTION_PAGE_ID='id1,id2,id3'")
             exit(1)
-    
-    print(f"\nFetched {len(content)} characters from Notion\n")
-    print("=" * 50)
-    
-    # Generate Mastodon post text
-    print(f"\n{'='*50}")
-    print("Generating Mastodon post...")
-    print(f"{'='*50}\n")
-    
-    post_content = generate_mastodon_post(content)
+        
+        print(f"\nFetched {len(content)} characters from Notion\n")
+        post_content = generate_mastodon_post(content)
     
     # Generate image for the post
     image_path = None

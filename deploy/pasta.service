@@ -1,0 +1,22 @@
+[Unit]
+Description=pasta.py Mastodon Post Generator
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/sundai
+Environment="PATH=/opt/sundai/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/opt/sundai/venv/bin/python3 /opt/sundai/pasta.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pasta
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
