@@ -5,10 +5,27 @@ from config import llm_client
 from utils import truncate_post_to_limit
 
 
-def generate_mastodon_post(notion_content):
-    """Generate a Mastodon post based on Notion content."""
+def generate_mastodon_post(notion_content=None, rag_context=None, topic=None):
+    """
+    Generate a Mastodon post based on Notion content or RAG context.
     
-    system_prompt = """You are a social media content creator. Based on the provided documents, create an engaging Mastodon post.
+    Args:
+        notion_content: Full Notion content (legacy mode)
+        rag_context: Retrieved context from RAG system (preferred)
+        topic: Optional topic/query for the post
+    """
+    
+    # Use RAG context if provided, otherwise fall back to full content
+    if rag_context:
+        content_source = rag_context
+        content_note = "relevant context retrieved from knowledge base"
+    elif notion_content:
+        content_source = notion_content
+        content_note = "documents from Notion"
+    else:
+        raise ValueError("Either notion_content or rag_context must be provided")
+    
+    system_prompt = """You are a social media content creator. Based on the provided context, create an engaging Mastodon post.
     
 Guidelines:
 - Create a single, engaging Mastodon post (MUST be 500 characters or less - this is a hard limit)
@@ -17,11 +34,13 @@ Guidelines:
 - Maintain the key messages from the source material
 - Write in a conversational, authentic tone
 - Do NOT include any numbering or formatting like "1.", "2.", etc. - just write the post directly
-- IMPORTANT: Keep your response under 500 characters total"""
+- IMPORTANT: Keep your response under 500 characters total
+- Use ONLY information from the provided context"""
 
-    user_message = f"""Based on the following documents from Notion, create a Mastodon post (max 500 characters):
+    topic_part = f" about: {topic}" if topic else ""
+    user_message = f"""Based on this {content_note}, create a Mastodon post{topic_part} (max 500 characters):
 
-{notion_content}
+{content_source}
 
 Generate the post now (just the post text, no numbering or extra formatting, under 500 characters):"""
 
@@ -48,6 +67,20 @@ Generate the post now (just the post text, no numbering or extra formatting, und
         print(f"⚠️  Post exceeded 500 characters and was truncated to {len(post_content)} characters")
     
     return post_content
+
+
+def generate_post_with_rag(context: str, topic: str = None) -> str:
+    """
+    Generate a social media post using RAG context.
+    
+    Args:
+        context: Retrieved context from RAG system
+        topic: Optional topic/query for the post
+    
+    Returns:
+        Generated post text
+    """
+    return generate_mastodon_post(rag_context=context, topic=topic)
 
 
 def generate_replies_to_posts(posts, business_context=""):
