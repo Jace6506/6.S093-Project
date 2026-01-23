@@ -83,8 +83,8 @@ def create_new_post_mode(use_rag: bool = True, topic: str = None):
         print("Retrieving relevant context with RAG...")
         print("=" * 50)
         
-        # Use topic if provided, otherwise use a default query
-        query = topic if topic else "AI consulting services"
+        # Use topic if provided, otherwise use a generic query that should match any content
+        query = topic if topic else "services and offerings"
         print(f"Search query: {query}")
         
         rag_context, results = retrieve_context(query, top_k=10)
