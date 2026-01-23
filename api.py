@@ -295,6 +295,60 @@ async def create_post_with_rag_endpoint(request: PostRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Automation endpoints
+try:
+    from automation import get_automation_listener
+    import asyncio
+    from fastapi import BackgroundTasks
+
+    @app.on_event("startup")
+    async def startup_event():
+        """Start automation listeners on API startup (if enabled)."""
+        if os.getenv("AUTO_START_LISTENERS", "false").lower() == "true":
+            listener = get_automation_listener()
+            # Start in background
+            asyncio.create_task(listener.start())
+
+    @app.post("/api/automation/start")
+    async def start_automation_endpoint(background_tasks: BackgroundTasks):
+        """Start the automation listeners."""
+        try:
+            listener = get_automation_listener()
+            if not listener.running:
+                background_tasks.add_task(listener.start)
+                return {"message": "Automation listeners started", "status": "running"}
+            else:
+                return {"message": "Automation listeners already running", "status": "running"}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/automation/stop")
+    async def stop_automation_endpoint():
+        """Stop the automation listeners."""
+        try:
+            listener = get_automation_listener()
+            listener.stop()
+            return {"message": "Automation listeners stopped", "status": "stopped"}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/api/automation/status")
+    async def get_automation_status():
+        """Get automation listeners status."""
+        try:
+            listener = get_automation_listener()
+            return {
+                "running": listener.running,
+                "last_notion_check": len(listener.last_notion_check),
+                "processed_notifications": len(listener.processed_notifications)
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+except ImportError:
+    # Automation module not available
+    pass
+
+
 if __name__ == "__main__":
     import uvicorn
     host = os.getenv("API_HOST", "0.0.0.0")

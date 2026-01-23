@@ -6,7 +6,11 @@ from typing import List, Optional, Dict, Any
 from contextlib import contextmanager
 
 # Database file path
-DB_PATH = os.getenv("DB_PATH", "/opt/sundai/data.db")
+# Default to local data.db in current directory, or VM path if that doesn't exist
+_default_db_path = os.path.join(os.path.dirname(__file__), "data.db")
+if not os.path.exists(_default_db_path):
+    _default_db_path = "/opt/sundai/data.db"
+DB_PATH = os.getenv("DB_PATH", _default_db_path)
 
 
 @contextmanager
